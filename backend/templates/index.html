@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agent Negotiation</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="shell">
+<aside class="sidebar">
+  <div class="brand"><div class="logo">A↔A</div><div><b>Agent Negotiation</b><small>AI Commerce Engine</small></div></div>
+  <nav><button class="nav active" data-page="dashboard">⌂ <span>Dashboard</span></button><button class="nav" data-page="history">◷ <span>History</span></button></nav>
+  <div class="online"><i></i><div><b>System Online</b><small>FastAPI backend</small></div></div>
+</aside>
+
+<main>
+<header><div><p> AUTONOMOUS COMMERCE</p><h1>Agent-to-Agent Negotiation</h1></div><div class="api"><i></i> API Connected</div></header>
+
+<section id="dashboard">
+<div class="top-grid">
+<section class="card">
+  <div class="head"><div><p>01 / SETUP</p><h2>Start a negotiation</h2></div><em>LIVE ENGINE</em></div>
+  <label>Product</label><select id="product"></select>
+  <div id="productInfo" class="stats"></div>
+  <div class="fields">
+    <div><label>Buyer target</label><input id="target" type="number" placeholder="88000"></div>
+    <div><label>Maximum budget</label><input id="budget" type="number" placeholder="90000"></div>
+    <div><label>Buyer persona</label><select id="persona"><option value="price-sensitive">Price Sensitive</option><option value="casual">Casual</option><option value="urgent">Urgent</option></select></div>
+    <div><label>Maximum rounds</label><input id="rounds" type="number" min="1" max="10" value="4"></div>
+  </div>
+  <button id="start">Start AI Negotiation <b>→</b></button>
+  <div id="error" class="error"></div>
+</section>
+
+<section class="card">
+  <div class="head"><div><p>02 / MARKET DATA</p><h2>Merchant intelligence</h2></div></div>
+  <div id="merchantData" class="metrics"></div>
+  <div class="note">✦ Pricing combines historical sales, inventory pressure, sales velocity and hard business constraints.</div>
+</section>
+</div>
+
+<section class="card negotiation">
+<div class="head"><div><p>03 / LIVE NEGOTIATION</p><h2>Buyer ↔ Merchant</h2></div><em id="round">WAITING</em></div>
+<div class="agents">
+  <div class="agent"><div class="agent-icon buyer">B</div><div><b>Buyer Agent</b><small id="buyerSummary">Target — · Budget —</small></div><span>READY</span></div>
+  <div class="connector">AI</div>
+  <div class="agent"><div class="agent-icon merchant">M</div><div><b>Merchant Agent</b><small id="merchantSummary">Floor — · List —</small></div><span>READY</span></div>
+</div>
+<div id="transcript" class="transcript empty"><div><strong>Ready for negotiation</strong><small>Configure the buyer and let the two agents negotiate autonomously.</small></div></div>
+</section>
+
+<div class="bottom-grid">
+<section class="card">
+<div class="head"><div><p>04 / OUTCOME</p><h2>Deal result</h2></div></div>
+<div id="result" class="empty-result">No completed negotiation yet.</div>
+</section>
+<section class="card">
+<div class="head"><div><p>DECISION TRACE</p><h2>Why this price?</h2></div></div>
+<div id="factors"></div>
+</section>
+</div>
+</section>
+
+<section id="history" class="hidden">
+<section class="card">
+<div class="head"><div><p>05 / HISTORY</p><h2>Previous negotiations</h2></div><button id="refresh" class="secondary">Refresh</button></div>
+<div class="table-wrap"><table><thead><tr><th>ID</th><th>Product</th><th>Persona</th><th>Rounds</th><th>Final Price</th><th>Status</th><th>Payment</th></tr></thead><tbody id="historyBody"></tbody></table></div>
+</section>
+</section>
+</main>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
