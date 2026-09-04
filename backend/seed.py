@@ -1,15 +1,14 @@
 from datetime import datetime, timedelta
 
-from backend.database import SessionLocal, engine, Base
+from backend.database import Base, SessionLocal, engine
 from backend.models import Product, Sale
 
 
+# Create tables if they do not already exist.
 Base.metadata.create_all(bind=engine)
 
-db = SessionLocal()
 
-
-products = [
+PRODUCTS = [
     {
         "name": "Mechanical Keyboard",
         "list_price": 8000,
@@ -73,59 +72,100 @@ products = [
 ]
 
 
-def seed():
-    for product_data in products:
+def seed_database():
+    db = SessionLocal()
 
-        existing = (
-            db.query(Product)
-            .filter(Product.name == product_data["name"])
-            .first()
-        )
+    try:
+        for product_data in PRODUCTS:
 
-        if existing:
-            product = existing
-        else:
-            product = Product(
-                name=product_data["name"],
-                list_price=product_data["list_price"],
-                floor_price=product_data["floor_price"],
-                beginning_inventory=product_data["beginning_inventory"],
-                current_inventory=product_data["current_inventory"],
-                weeks_remaining=product_data["weeks_remaining"],
+            # -------------------------------------------------
+            # 1. Find or create product
+            # -------------------------------------------------
+
+            product = (
+                db.query(Product)
+                .filter(Product.name == product_data["name"])
+                .first()
             )
 
-            db.add(product)
-            db.flush()
-
-        existing_sales = (
-            db.query(Sale)
-            .filter(Sale.product_id == product.id)
-            .count()
-        )
-
-        if existing_sales == 0:
-            for index, (price, persona) in enumerate(
-                product_data["sales"]
-            ):
-                sale = Sale(
-                    product_id=product.id,
-                    final_price=price,
-                    quantity=1,
-                    buyer_persona=persona,
-                    negotiation_rounds=index + 1,
-                    sold_at=datetime.utcnow() - timedelta(
-                        weeks=5 - index
-                    ),
+            if product is None:
+                product = Product(
+                    name=product_data["name"],
+                    list_price=product_data["list_price"],
+                    floor_price=product_data["floor_price"],
+                    beginning_inventory=product_data["beginning_inventory"],
+                    current_inventory=product_data["current_inventory"],
+                    weeks_remaining=product_data["weeks_remaining"],
                 )
 
-                db.add(sale)
+                db.add(product)
+                db.flush()
 
-    db.commit()
+                print(
+                    f"Created product: "
+                    f"{product.name} (ID {product.id})"
+                )
 
-    print("Demo products and historical sales seeded successfully.")
+            else:
+                print(
+                    f"Product already exists: "
+                    f"{product.name} (ID {product.id})"
+                )
 
-    db.close()
+            # -------------------------------------------------
+            # 2. Add historical sales only if none exist
+            # -------------------------------------------------
+
+            sales_count = (
+                db.query(Sale)
+                .filter(Sale.product_id == product.id)
+                .count()
+            )
+
+            if sales_count == 0:
+
+                for index, (price, persona) in enumerate(
+                    product_data["sales"]
+                ):
+                    sale = Sale(
+                        product_id=product.id,
+                        final_price=price,
+                        quantity=1,
+                        buyer_persona=persona,
+                        negotiation_rounds=index + 1,
+                        sold_at=(
+                            datetime.utcnow()
+                            - timedelta(weeks=5 - index)
+                        ),
+                    )
+
+                    db.add(sale)
+
+                print(
+                    f"Added {len(product_data['sales'])} "
+                    f"historical sales for {product.name}"
+                )
+
+            else:
+                print(
+                    f"Historical sales already exist for "
+                    f"{product.name} ({sales_count} records)"
+                )
+
+        db.commit()
+
+        print()
+        print("=" * 50)
+        print("DATABASE SEED COMPLETED SUCCESSFULLY")
+        print("=" * 50)
+
+    except Exception:
+        db.rollback()
+        raise
+
+    finally:
+        db.close()
 
 
 if __name__ == "__main__":
-    seed()
+    seed_database()
