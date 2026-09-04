@@ -1,27 +1,13 @@
+import hashlib
+import hmac
 import json
 
-import razorpay
-
-from fastapi import (
-    APIRouter,
-    Depends,
-    HTTPException,
-    Request
-)
-
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from ..config import (
-    RAZORPAY_WEBHOOK_SECRET
-)
-
+from ..config import RAZORPAY_WEBHOOK_SECRET
 from ..database import get_db
-
-from ..models import (
-    Negotiation,
-    Product,
-    Sale
-)
+from ..models import Negotiation, Product, Round, Sale
 
 
 router = APIRouter(
@@ -30,236 +16,291 @@ router = APIRouter(
 )
 
 
-# ==========================================
-# RAZORPAY CLIENT
-# ==========================================
+def verify_signature(
+    body: bytes,
+    signature: str
+) -> bool:
+    """
+    Verify that the webhook request
+    was sent by Razorpay.
+    """
 
-client = razorpay.Client()
+    expected_signature = hmac.new(
+        RAZORPAY_WEBHOOK_SECRET.encode(),
+        body,
+        hashlib.sha256
+    ).hexdigest()
 
+    return hmac.compare_digest(
+        expected_signature,
+        signature
+    )
 
-# ==========================================
-# RAZORPAY WEBHOOK
-# ==========================================
 
 @router.post("/razorpay")
 async def razorpay_webhook(
     request: Request,
     db: Session = Depends(get_db)
 ):
+    """
+    Handle Razorpay webhook events.
 
-    # ==========================================
-    # READ RAW REQUEST BODY
-    # ==========================================
+    Currently handles:
+        payment.captured
+    """
+
+    # ---------------------------------------------------------
+    # 1. Read raw request body
+    # ---------------------------------------------------------
 
     body = await request.body()
+
+    # ---------------------------------------------------------
+    # 2. Get Razorpay signature
+    # ---------------------------------------------------------
 
     signature = request.headers.get(
         "X-Razorpay-Signature"
     )
 
     if not signature:
-
         raise HTTPException(
             status_code=400,
             detail="Missing Razorpay webhook signature"
         )
 
+    # ---------------------------------------------------------
+    # 3. Verify signature
+    # ---------------------------------------------------------
 
-    # ==========================================
-    # VERIFY WEBHOOK SIGNATURE
-    # ==========================================
-
-    try:
-
-        client.utility.verify_webhook_signature(
-            body.decode("utf-8"),
-            signature,
-            RAZORPAY_WEBHOOK_SECRET
-        )
-
-    except Exception:
-
+    if not verify_signature(
+        body,
+        signature
+    ):
         raise HTTPException(
             status_code=400,
             detail="Invalid Razorpay webhook signature"
         )
 
-
-    # ==========================================
-    # PARSE EVENT
-    # ==========================================
+    # ---------------------------------------------------------
+    # 4. Parse JSON
+    # ---------------------------------------------------------
 
     try:
-
         payload = json.loads(
             body.decode("utf-8")
         )
 
     except json.JSONDecodeError:
-
         raise HTTPException(
             status_code=400,
             detail="Invalid JSON payload"
         )
 
-
-    event = payload.get(
-        "event"
-    )
-
+    event = payload.get("event")
 
     print(
-        f"[RAZORPAY WEBHOOK] Event: {event}"
+        f"[RAZORPAY WEBHOOK] Event received: {event}"
     )
 
-
-    # ==========================================
-    # ONLY PROCESS PAYMENT CAPTURE
-    # ==========================================
+    # ---------------------------------------------------------
+    # 5. Ignore unsupported events
+    # ---------------------------------------------------------
 
     if event != "payment.captured":
-
         return {
             "status": "ignored",
             "event": event
         }
 
+    # ---------------------------------------------------------
+    # 6. Extract payment entity
+    # ---------------------------------------------------------
 
-    # ==========================================
-    # EXTRACT PAYMENT DATA
-    # ==========================================
+    try:
+        payment_entity = (
+            payload["payload"]
+            ["payment"]
+            ["entity"]
+        )
 
-    payment_entity = (
-        payload
-        .get("payload", {})
-        .get("payment", {})
-        .get("entity", {})
+    except KeyError:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid Razorpay payment payload"
+        )
+
+    payment_id = payment_entity.get("id")
+
+    payment_amount_paise = payment_entity.get(
+        "amount"
     )
 
-
-    payment_id = payment_entity.get(
-        "id"
+    payment_status = payment_entity.get(
+        "status"
     )
+
+    # ---------------------------------------------------------
+    # 7. Validate payment status
+    # ---------------------------------------------------------
+
+    if payment_status != "captured":
+        return {
+            "status": "ignored",
+            "reason": "Payment is not captured"
+        }
+
+    if payment_amount_paise is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Payment amount missing"
+        )
+
+    payment_amount = (
+        payment_amount_paise / 100
+    )
+
+    # ---------------------------------------------------------
+    # 8. Extract payment-link information
+    # ---------------------------------------------------------
 
     payment_link_id = payment_entity.get(
         "payment_link_id"
     )
 
+    notes = payment_entity.get(
+        "notes"
+    ) or {}
 
-    if not payment_link_id:
-
-        print(
-            "[RAZORPAY WEBHOOK] "
-            "No payment_link_id found."
-        )
-
-        return {
-            "status": "ignored",
-            "reason": "No payment_link_id"
-        }
-
-
-    # ==========================================
-    # FIND NEGOTIATION
-    # ==========================================
-
-    negotiation = (
-        db.query(Negotiation)
-        .filter(
-            Negotiation.payment_link_id
-            == payment_link_id
-        )
-        .first()
+    negotiation_id = notes.get(
+        "negotiation_id"
     )
 
+    # ---------------------------------------------------------
+    # 9. Find negotiation
+    # ---------------------------------------------------------
 
-    if not negotiation:
+    negotiation = None
 
-        raise HTTPException(
-            status_code=404,
-            detail="Negotiation for payment link not found"
+    # Preferred:
+    # negotiation ID stored in Razorpay notes.
+
+    if negotiation_id:
+
+        try:
+            negotiation_id = int(
+                negotiation_id
+            )
+
+        except (TypeError, ValueError):
+            negotiation_id = None
+
+        if negotiation_id:
+
+            negotiation = (
+                db.query(Negotiation)
+                .filter(
+                    Negotiation.id
+                    == negotiation_id
+                )
+                .first()
+            )
+
+    # Fallback:
+    # Find using Razorpay payment-link ID.
+
+    if (
+        negotiation is None
+        and payment_link_id
+    ):
+
+        negotiation = (
+            db.query(Negotiation)
+            .filter(
+                Negotiation.payment_link_id
+                == payment_link_id
+            )
+            .first()
         )
 
+    if negotiation is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Negotiation not found"
+        )
 
-    # ==========================================
-    # IDEMPOTENCY CHECK
-    # ==========================================
+    # ---------------------------------------------------------
+    # 10. Idempotency protection
+    # ---------------------------------------------------------
+
+    # Razorpay can retry webhook delivery.
+    # Do not process the same payment twice.
 
     if negotiation.payment_status == "paid":
 
         print(
             "[RAZORPAY WEBHOOK] "
-            f"Negotiation {negotiation.id} "
-            "already marked as paid."
+            f"Payment already processed "
+            f"for negotiation {negotiation.id}"
         )
 
         return {
             "status": "already_processed",
-            "negotiation_id": negotiation.id
+            "negotiation_id": negotiation.id,
+            "payment_id": payment_id
         }
 
-
-    # ==========================================
-    # VALIDATE AGREEMENT
-    # ==========================================
+    # ---------------------------------------------------------
+    # 11. Validate negotiation
+    # ---------------------------------------------------------
 
     if negotiation.status != "agreed":
-
         raise HTTPException(
             status_code=400,
             detail=(
-                "Payment received for a negotiation "
-                "that is not agreed"
+                "Payment received for a "
+                "negotiation that is not agreed"
             )
         )
 
-
     if negotiation.agreed_price is None:
-
         raise HTTPException(
             status_code=400,
             detail="Negotiation has no agreed price"
         )
 
+    # ---------------------------------------------------------
+    # 12. Validate payment amount
+    # ---------------------------------------------------------
 
-    # ==========================================
-    # VALIDATE PAYMENT AMOUNT
-    # ==========================================
-
-    expected_amount = int(
-        round(
-            negotiation.agreed_price * 100
-        )
+    agreed_price = float(
+        negotiation.agreed_price
     )
 
-    received_amount = payment_entity.get(
-        "amount"
+    expected_amount_paise = int(
+        round(agreed_price * 100)
     )
 
-
-    if received_amount != expected_amount:
-
-        print(
-            "[RAZORPAY WEBHOOK] Amount mismatch:"
-        )
+    if payment_amount_paise != expected_amount_paise:
 
         print(
-            f"Expected: {expected_amount}"
-        )
-
-        print(
-            f"Received: {received_amount}"
+            "[RAZORPAY WEBHOOK] "
+            f"Amount mismatch. "
+            f"Expected ₹{agreed_price}, "
+            f"received ₹{payment_amount}"
         )
 
         raise HTTPException(
             status_code=400,
-            detail="Payment amount does not match agreed price"
+            detail=(
+                "Payment amount does not "
+                "match agreed price"
+            )
         )
 
-
-    # ==========================================
-    # FIND PRODUCT
-    # ==========================================
+    # ---------------------------------------------------------
+    # 13. Find product
+    # ---------------------------------------------------------
 
     product = (
         db.query(Product)
@@ -270,96 +311,98 @@ async def razorpay_webhook(
         .first()
     )
 
-
-    if not product:
-
+    if product is None:
         raise HTTPException(
             status_code=404,
             detail="Product not found"
         )
 
-
-    # ==========================================
-    # INVENTORY CHECK
-    # ==========================================
+    # ---------------------------------------------------------
+    # 14. Check inventory
+    # ---------------------------------------------------------
 
     if product.current_inventory <= 0:
-
         raise HTTPException(
             status_code=400,
-            detail="Product is out of inventory"
+            detail="Product is out of stock"
         )
 
+    # ---------------------------------------------------------
+    # 15. Count ACTUAL negotiation rounds
+    # ---------------------------------------------------------
 
-    # ==========================================
-    # CREATE SALE
-    # ==========================================
+    actual_rounds = (
+        db.query(Round)
+        .filter(
+            Round.negotiation_id
+            == negotiation.id
+        )
+        .count()
+    )
+
+    # ---------------------------------------------------------
+    # 16. Create Sale
+    # ---------------------------------------------------------
 
     sale = Sale(
-
         product_id=product.id,
-
-        final_price=negotiation.agreed_price,
-
+        final_price=agreed_price,
         quantity=1,
-
         buyer_persona=negotiation.persona,
-
-        negotiation_rounds=negotiation.max_rounds
+        negotiation_rounds=actual_rounds
     )
 
+    db.add(sale)
 
-    db.add(
-        sale
-    )
-
-
-    # ==========================================
-    # UPDATE INVENTORY
-    # ==========================================
+    # ---------------------------------------------------------
+    # 17. Decrease inventory
+    # ---------------------------------------------------------
 
     product.current_inventory -= 1
 
-
-    # ==========================================
-    # UPDATE NEGOTIATION
-    # ==========================================
+    # ---------------------------------------------------------
+    # 18. Mark payment as paid
+    # ---------------------------------------------------------
 
     negotiation.payment_status = "paid"
 
+    # ---------------------------------------------------------
+    # 19. Commit atomically
+    # ---------------------------------------------------------
 
-    # ==========================================
-    # COMMIT EVERYTHING
-    # ==========================================
+    try:
+        db.commit()
 
-    db.commit()
+    except Exception as exc:
+        db.rollback()
 
+        print(
+            "[RAZORPAY WEBHOOK] "
+            f"Database error: {exc}"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to record payment"
+        )
+
+    # ---------------------------------------------------------
+    # 20. Log successful payment
+    # ---------------------------------------------------------
 
     print(
-        "[RAZORPAY WEBHOOK] Payment processed:"
+        "[RAZORPAY WEBHOOK] "
+        f"Payment successful | "
+        f"negotiation={negotiation.id} | "
+        f"payment={payment_id} | "
+        f"amount=₹{agreed_price} | "
+        f"rounds={actual_rounds}"
     )
-
-    print(
-        f"Negotiation: {negotiation.id}"
-    )
-
-    print(
-        f"Payment: {payment_id}"
-    )
-
-    print(
-        f"Amount: ₹{negotiation.agreed_price:,.2f}"
-    )
-
-    print(
-        f"Inventory remaining: "
-        f"{product.current_inventory}"
-    )
-
 
     return {
-        "status": "processed",
+        "status": "success",
         "negotiation_id": negotiation.id,
         "payment_id": payment_id,
-        "amount": negotiation.agreed_price
+        "amount": agreed_price,
+        "rounds": actual_rounds
     }
