@@ -5,9 +5,12 @@ from pathlib import Path
 
 from .database import Base, engine
 from . import models
-from .seed import seed_database
 
-from .routers import products, negotiations, webhooks
+from .routers import (
+    products,
+    negotiations,
+    webhooks
+)
 
 
 app = FastAPI(
@@ -15,9 +18,8 @@ app = FastAPI(
     version="1.0.0"
 )
 
-Base.metadata.create_all(bind=engine)
 
-seed_database()
+Base.metadata.create_all(bind=engine)
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -28,11 +30,13 @@ app.mount(
     name="static"
 )
 
+
 @app.get("/ui")
 def frontend():
     return FileResponse(
         BASE_DIR / "templates" / "index.html"
     )
+
 
 app.include_router(products.router)
 app.include_router(negotiations.router)
@@ -42,6 +46,9 @@ app.include_router(webhooks.router)
 @app.get("/")
 def root():
     return {
-        "message": "Agent-to-Agent Price Negotiation API",
+        "message": (
+            "Agent-to-Agent "
+            "Price Negotiation API"
+        ),
         "status": "running"
     }
