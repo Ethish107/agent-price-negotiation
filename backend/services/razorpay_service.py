@@ -26,7 +26,7 @@ def create_payment_link(
 
     amount_paise = int(round(amount * 100))
 
-    reference_id = f"NEG-{negotiation_id}"
+    reference_id = f"NEG-{negotiation_id*1000}"
 
     payment_data = {
         "amount": amount_paise,
